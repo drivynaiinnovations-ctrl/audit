@@ -1,0 +1,20 @@
+name: RolePilot Submission Guard tests
+on:
+  push:
+    paths:
+      - 'rolepilot-submission-guard/**'
+      - '.github/workflows/rolepilot-guard.yml'
+  pull_request:
+    paths:
+      - 'rolepilot-submission-guard/**'
+      - '.github/workflows/rolepilot-guard.yml'
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run submission guard regression suite
+        run: cd rolepilot-submission-guard && python -m unittest discover -s tests -v

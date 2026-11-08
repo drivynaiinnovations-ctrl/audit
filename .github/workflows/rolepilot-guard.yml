@@ -18,3 +18,8 @@ jobs:
           python-version: '3.12'
       - name: Run submission guard regression suite
         run: cd rolepilot-submission-guard && python -m unittest discover -s tests -v
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run Cloudflare Worker handler tests
+        run: cd rolepilot-submission-guard/cloudflare && npm test

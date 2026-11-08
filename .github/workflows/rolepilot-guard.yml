@@ -23,3 +23,14 @@ jobs:
           node-version: '22'
       - name: Run Cloudflare Worker handler tests
         run: cd rolepilot-submission-guard/cloudflare && npm test
+      - name: Staging HTTPS smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE='https://rolepilot-staging-guard.drivyn-ai-innovations.workers.dev'
+          curl --fail --silent --show-error --retry 3 --retry-delay 2 "$BASE/health" | python -c 'import json,sys; x=json.load(sys.stdin); assert x["submissions_enabled"] is False and x["status"]=="healthy"'
+          CODE=$(curl --silent --show-error -o /tmp/rolepilot-execute.json -w '%{http_code}' -X POST "$BASE/api/execute" -H 'Content-Type: application/json' --data '{}')
+          test "$CODE" = '403'
+          python -c 'import json; x=json.load(open("/tmp/rolepilot-execute.json")); assert x["reason"]=="LIVE_SUBMISSION_DISABLED"'
+          CODE=$(curl --silent --show-error -o /tmp/rolepilot-auth.json -w '%{http_code}' -X POST "$BASE/api/plan" -H 'Content-Type: application/json' --data '{}')
+          test "$CODE" = '401'

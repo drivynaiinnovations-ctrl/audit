@@ -5,31 +5,31 @@ import re
 from ats_providers import ASSISTED_DOMAINS
 
 
-def prepare_greenhouse(page, preparation, profile, resume=None):
+def prepare_greenhouse(page, preparation, profile, resume=None, *, letter=None):
     open_preparation(page, preparation, "greenhouse")
-    return fill_required_fields(page, profile, ("First Name", "Last Name", "Email"), resume)
+    return fill_required_fields(page, profile, ("First Name", "Last Name", "Email"), resume, letter=letter)
 
 
-def prepare_lever(page, preparation, profile, resume=None):
+def prepare_lever(page, preparation, profile, resume=None, *, letter=None):
     open_preparation(page, preparation, "lever")
-    return fill_required_fields(page, profile, ("Full name", "Email", "Phone"), resume)
+    return fill_required_fields(page, profile, ("Full name", "Email", "Phone"), resume, letter=letter)
 
 
-def prepare_workday(page, preparation, profile=None, resume=None):
+def prepare_workday(page, preparation, profile=None, resume=None, *, letter=None):
     open_preparation(page, preparation, "workday")
     if page.get_by_role("button", name="Sign In", exact=True).is_visible():
         return "HOLD_SIGN_IN"
     if profile is not None:
-        return fill_required_fields(page, profile, ("First Name", "Last Name", "Email"), resume)
+        return fill_required_fields(page, profile, ("First Name", "Last Name", "Email"), resume, letter=letter)
     return "HOLD_REVIEW"
 
 
-def prepare_assisted(page, preparation, profile, resume=None):
+def prepare_assisted(page, preparation, profile, resume=None, *, letter=None):
     """Prepare a labeled application form and report missing required answers."""
     if preparation.provider not in ASSISTED_DOMAINS:
         raise ValueError("Unsupported assisted provider")
     open_preparation(page, preparation, preparation.provider)
-    return fill_required_fields(page, profile, ("First Name", "Last Name", "Email"), resume)
+    return fill_required_fields(page, profile, ("First Name", "Last Name", "Email"), resume, letter=letter)
 
 
 def open_preparation(page, preparation, provider):
@@ -42,7 +42,7 @@ def open_preparation(page, preparation, provider):
     page.goto(preparation.url, wait_until="domcontentloaded")
 
 
-def fill_required_fields(page, profile, labels, resume=None):
+def fill_required_fields(page, profile, labels, resume=None, *, letter=None):
     form = page.locator("form").filter(has=page.get_by_label("Email", exact=True))
     for label in labels:
         if profile.get(label):
@@ -50,6 +50,9 @@ def fill_required_fields(page, profile, labels, resume=None):
 
     if resume is not None:
         attach_resume(form, resume)
+
+    if letter is not None:
+        prepare_letter(form, letter)
 
     return form.locator("input[required]:not([type=hidden]), textarea[required], select[required]").evaluate_all(
         "(fields) => fields.filter(field => field.validity.valueMissing)"
@@ -70,6 +73,28 @@ def attach_resume(form, resume):
     field.set_input_files(resume)
     if field.evaluate("(input) => input.files.length") != 1:
         raise ValueError("Résumé attachment needs review: no file retained by the form")
+
+
+def prepare_letter(form, letter):
+    """Use the letter field matching the supplied text or attachment."""
+    label = re.compile(r"^(?:(?:upload|attach)\s+)?(?:cover|pitch)\s+letter\s*\*?$", re.IGNORECASE)
+    if isinstance(letter, str):
+        if not letter.strip():
+            raise ValueError("Letter needs review: text is empty")
+        field = form.get_by_label(label).and_(form.locator('textarea, input[type="text"], input:not([type])'))
+        if field.count() != 1:
+            raise ValueError("Letter needs review: expected one labeled text field")
+        field.fill(letter)
+        if field.input_value() != letter:
+            raise ValueError("Letter needs review: form did not retain the text")
+        return
+
+    field = form.get_by_label(label).and_(form.locator('input[type="file"]'))
+    if field.count() != 1:
+        raise ValueError("Letter needs review: expected one labeled file input")
+    field.set_input_files(letter)
+    if field.evaluate("(input) => input.files.length") != 1:
+        raise ValueError("Letter needs review: form did not retain the file")
 
 
 def preparation_context(browser, preparation, fixture_html):

@@ -1,24 +1,26 @@
 """Prepare ATS forms in an isolated Playwright context."""
 
+import re
+
 from ats_providers import ASSISTED_DOMAINS
 
 
-def prepare_greenhouse(page, preparation, profile):
+def prepare_greenhouse(page, preparation, profile, resume=None):
     open_preparation(page, preparation, "greenhouse")
-    return fill_required_fields(page, profile, ("First Name", "Last Name", "Email"))
+    return fill_required_fields(page, profile, ("First Name", "Last Name", "Email"), resume)
 
 
-def prepare_lever(page, preparation, profile):
+def prepare_lever(page, preparation, profile, resume=None):
     open_preparation(page, preparation, "lever")
-    return fill_required_fields(page, profile, ("Full name", "Email", "Phone"))
+    return fill_required_fields(page, profile, ("Full name", "Email", "Phone"), resume)
 
 
-def prepare_workday(page, preparation, profile=None):
+def prepare_workday(page, preparation, profile=None, resume=None):
     open_preparation(page, preparation, "workday")
     if page.get_by_role("button", name="Sign In", exact=True).is_visible():
         return "HOLD_SIGN_IN"
     if profile is not None:
-        return fill_required_fields(page, profile, ("First Name", "Last Name", "Email"))
+        return fill_required_fields(page, profile, ("First Name", "Last Name", "Email"), resume)
     return "HOLD_REVIEW"
 
 
@@ -47,12 +49,27 @@ def fill_required_fields(page, profile, labels, resume=None):
             form.get_by_label(label, exact=True).fill(profile[label])
 
     if resume is not None:
-        form.get_by_label("Resume", exact=True).set_input_files(resume)
+        attach_resume(form, resume)
 
     return form.locator("input[required]:not([type=hidden]), textarea[required], select[required]").evaluate_all(
         "(fields) => fields.filter(field => field.validity.valueMissing)"
-        ".map(field => field.labels?.[0]?.textContent.trim() || field.name)"
+        """.map(field => {
+            const label = field.labels?.[0]?.cloneNode(true);
+            label?.querySelectorAll('input, select, textarea, button').forEach(control => control.remove());
+            return label?.textContent.trim() || field.name;
+        })"""
     )
+
+
+def attach_resume(form, resume):
+    """Attach the selected file and verify the browser retained it."""
+    label = re.compile(r"^(?:(?:upload|attach)\s+)?(?:r[eé]sum[eé](?:\s*/\s*cv)?|cv)\s*\*?$", re.IGNORECASE)
+    field = form.get_by_label(label).and_(form.locator('input[type="file"]'))
+    if field.count() != 1:
+        raise ValueError("Résumé attachment needs review: expected one labeled file input")
+    field.set_input_files(resume)
+    if field.evaluate("(input) => input.files.length") != 1:
+        raise ValueError("Résumé attachment needs review: no file retained by the form")
 
 
 def preparation_context(browser, preparation, fixture_html):
@@ -66,7 +83,7 @@ def preparation_context(browser, preparation, fixture_html):
             and request.url == preparation.url
             and request.is_navigation_request()
         ):
-            route.fulfill(content_type="text/html", body=fixture_html)
+            route.fulfill(content_type="text/html; charset=utf-8", body=fixture_html)
         else:
             route.abort("blockedbyclient")
 

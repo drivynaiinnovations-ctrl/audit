@@ -11,7 +11,7 @@ FORM = """
   <label>First Name<input name="first_name" required></label>
   <label>Last Name<input name="last_name" required></label>
   <label>Email<input name="email" type="email" required></label>
-  <label>Why this role?<textarea name="motivation" required></textarea></label>
+  <label>Why this role?<select name="motivation" required><option value="">Choose</option><option value="test">Synthetic test answer</option></select></label>
   <button type="submit">Submit</button>
 </form>
 """
@@ -41,7 +41,7 @@ class GreenhouseBrowserTest(unittest.TestCase):
 
                 self.assertEqual(page.url, preparation.url)
                 self.assertEqual(page.get_by_label("Why this role?").input_value(), "")
-                page.get_by_label("Why this role?").fill("Synthetic test answer")
+                page.get_by_label("Why this role?").select_option("test")
                 with page.expect_event("requestfailed", predicate=lambda request: request.method == "POST") as blocked:
                     page.get_by_role("button", name="Submit").click(no_wait_after=True)
                 self.assertEqual(blocked.value.url, "https://job-boards.greenhouse.io/submit")

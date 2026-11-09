@@ -53,3 +53,22 @@ class OtherATSBrowserTests(unittest.TestCase):
         with page.expect_event("requestfailed", predicate=lambda request: request.method == "POST") as blocked:
             page.get_by_role("button", name="Sign In").click()
         self.assertIn("ERR_BLOCKED_BY_CLIENT", blocked.value.failure)
+
+    def test_workday_prepares_open_application_and_blocks_submission(self):
+        page, plan = self.open_fixture("workday", "https://example.wd5.myworkdayjobs.com/job/123/apply", """
+            <form method="post" action="/submit">
+              <label>First Name<input required name="first_name"></label>
+              <label>Last Name<input required name="last_name"></label>
+              <label>Email<input required name="email" type="email"></label>
+              <label>City<input required name="city"></label>
+              <button>Submit application</button>
+            </form>
+        """)
+        profile = {"First Name": "Sample", "Last Name": "Applicant", "Email": "sample@example.test"}
+        self.assertEqual(prepare_workday(page, plan, profile), ["City"])
+        for label, value in profile.items():
+            self.assertEqual(page.get_by_label(label, exact=True).input_value(), value)
+        page.get_by_label("City").fill("Sample City")
+        with page.expect_event("requestfailed", predicate=lambda request: request.method == "POST") as blocked:
+            page.get_by_role("button", name="Submit application").click()
+        self.assertIn("ERR_BLOCKED_BY_CLIENT", blocked.value.failure)

@@ -7,6 +7,23 @@ Workday applications are tenant-specific and generally require an authenticated 
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+# Match domain boundaries so lookalike hosts never inherit a provider identity.
+ASSISTED_DOMAINS = {
+    "ashby": ("jobs.ashbyhq.com",),
+    "ukg": ("recruiting.ultipro.com", "recruiting2.ultipro.com"),
+    "rippling": ("ats.rippling.com",),
+    "harri": ("harri.com",),
+    "workable": ("apply.workable.com",),
+    "icims": ("icims.com",),
+    "teamtailor": ("teamtailor.com",),
+    "successfactors": ("successfactors.com", "successfactors.eu"),
+    "adp": ("workforcenow.adp.com",),
+    "jobvite": ("jobs.jobvite.com",),
+    "careerplug": ("careerplug.com",),
+    "smartrecruiters": ("jobs.smartrecruiters.com",),
+}
+
+
 @dataclass(frozen=True)
 class ProviderPlan:
     provider: str
@@ -27,6 +44,9 @@ class ATSProviderRouter:
                 return ProviderPlan('lever','ASSISTED',False,'EMPLOYER_AUTHORIZATION_REQUIRED')
             if host.endswith('.myworkdayjobs.com') and host!='myworkdayjobs.com':
                 return ProviderPlan('workday','ASSISTED',False,'TENANT_AUTHENTICATED_WORKFLOW_REQUIRED')
+            for provider, domains in ASSISTED_DOMAINS.items():
+                if any(host == domain or host.endswith("." + domain) for domain in domains):
+                    return ProviderPlan(provider, "ASSISTED", False, "HUMAN_REVIEW_REQUIRED")
             return ProviderPlan('unknown','ASSISTED',False,'UNSUPPORTED_PROVIDER')
         except ValueError:
             return ProviderPlan('unknown','BLOCKED',False,'INVALID_URL')

@@ -10,17 +10,17 @@ Run `python -m unittest discover -s tests -v`. The service uses SQLite with tran
 | --- | --- | --- |
 | Greenhouse | DoorDash | Simulated form preparation and submission block |
 | Lever | Vida | Simulated form preparation and submission block |
-| Workday | OPENLANE | Simulated sign-in handoff and request block |
-| Ashby | Promise, Prelim | Backlog |
-| UKG | Tatte Bakery | Backlog |
-| Rippling | WPM Real Estate | Backlog |
-| Harri | CAVA | Backlog |
-| Workable | Checkmate, HeyTaco | Backlog |
-| iCIMS | LMI | Backlog |
-| Teamtailor | AllTech, SafelyYou | Backlog |
-| SAP SuccessFactors | Wyndham | Backlog |
-| ADP | WesBanco | Backlog |
-| Jobvite | Manhattan Strategy Group | Backlog |
-| CareerPlug | GoIntellects | Backlog |
+| Workday | OPENLANE | Simulated sign-in handoff, open form preparation, and submission block |
+| Ashby | Promise, Prelim | Shared simulated form, résumé attachment, submission block |
+| UKG | Tatte Bakery | Shared simulated form, résumé attachment, submission block |
+| Rippling | WPM Real Estate | Shared simulated form, résumé attachment, submission block |
+| Harri | CAVA | Shared simulated form, résumé attachment, submission block |
+| Workable | Checkmate, HeyTaco | Shared simulated form, résumé attachment, submission block |
+| iCIMS | LMI | Shared simulated form, résumé attachment, submission block |
+| Teamtailor | AllTech, SafelyYou | Shared simulated form, résumé attachment, submission block |
+| SAP SuccessFactors | Wyndham | Shared simulated form, résumé attachment, submission block |
+| ADP | WesBanco | Shared simulated form, résumé attachment, submission block |
+| Jobvite | Manhattan Strategy Group | Shared simulated form, résumé attachment, submission block |
+| CareerPlug | GoIntellects | Shared simulated form, résumé attachment, submission block |
 
-LinkedIn, Indeed, and SimplyHired are tracked as job sources. SmartRecruiters is a candidate for the inventory pending an employer example.
+LinkedIn, Indeed, and SimplyHired are tracked as job sources. SmartRecruiters passes the shared simulated form test. Its employer example is pending.

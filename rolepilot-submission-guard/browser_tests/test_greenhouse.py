@@ -3,7 +3,7 @@ import unittest
 from playwright.sync_api import sync_playwright
 
 from browser_planner import BrowserPreparation
-from greenhouse_browser import preparation_context, prepare_greenhouse
+from ats_browser import preparation_context, prepare_greenhouse
 
 
 FORM = """

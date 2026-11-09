@@ -35,7 +35,7 @@ jobs:
           CODE=$(curl --silent --show-error -o /tmp/rolepilot-auth.json -w '%{http_code}' -X POST "$BASE/api/plan" -H 'Content-Type: application/json' --data '{}')
           test "$CODE" = '401'
   greenhouse-browser:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: rolepilot-submission-guard

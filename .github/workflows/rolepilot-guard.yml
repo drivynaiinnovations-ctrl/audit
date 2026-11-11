@@ -34,3 +34,19 @@ jobs:
           python -c 'import json; x=json.load(open("/tmp/rolepilot-execute.json")); assert x["reason"]=="LIVE_SUBMISSION_DISABLED"'
           CODE=$(curl --silent --show-error -o /tmp/rolepilot-auth.json -w '%{http_code}' -X POST "$BASE/api/plan" -H 'Content-Type: application/json' --data '{}')
           test "$CODE" = '401'
+  ats-browser:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: rolepilot-submission-guard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Playwright and Chromium
+        run: |
+          python -m pip install playwright==1.56.0
+          python -m playwright install --with-deps chromium
+      - name: Test offline ATS preparation in Chromium
+        run: python -m unittest discover -s browser_tests -v

@@ -1,0 +1,25 @@
+{
+  // Secrets (set out-of-band, never committed): API_TOKEN, APPROVER_TOKEN, OPERATOR_TOKEN,
+  // RUNNER_TOKEN, COI_SHEET_ID, GOOGLE_SERVICE_ACCOUNT_JSON.
+  "name": "rolepilot-staging-guard",
+  "main": "index.mjs",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "keep_vars": true,
+  "observability": { "enabled": true },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "rolepilot-staging", "database_id": "439ce5fb-ba88-450c-b41b-a7a9ccdbf0e1" }
+  ],
+  "queues": {
+    "producers": [{ "binding": "PREP_QUEUE", "queue": "rolepilot-prep" }],
+    "consumers": [{
+      "queue": "rolepilot-prep",
+      "max_batch_size": 10,
+      "max_batch_timeout": 5,
+      "max_retries": 5,
+      "dead_letter_queue": "rolepilot-prep-dlq"
+    }]
+  },
+  "triggers": { "crons": ["*/30 * * * *"] }
+}

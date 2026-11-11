@@ -22,6 +22,21 @@ Run `python -m unittest discover -s tests -v`. The service uses SQLite with tran
 - The scheduled GitHub browser-runner audit executes every 15 minutes with concurrency control
 - Cloudflare remains the authenticated planning/queue boundary; live submissions remain disabled
 
+## Production preparation pipeline (submission disabled)
+
+`Career Opportunity Database` -> Worker `/api/coi/import` (cron every 30 min) -> Cloudflare Queue `rolepilot-prep`
+(DLQ `rolepilot-prep-dlq`) -> queue consumer -> D1 `prep_jobs` -> scheduled GitHub runner (`prep_runner.py`, every 15 min).
+
+- Google access is a read-only service account held only as the Worker secret `GOOGLE_SERVICE_ACCOUNT_JSON`; the sheet ID is the secret `COI_SHEET_ID`.
+- Import rules (`cloudflare/coi.mjs`): only unapplied, active rows with `Application Authorization` explicitly authorized; applied, rejected,
+  closed, withdrawn, duplicate, unauthorized and document-incomplete rows are blocked. Application Manifests are authoritative for the
+  résumé, cover letter, supporting documents and approved screening answers.
+- Duplicate prevention: in-sheet identity/URL checks, reposts of applied roles, and a D1 registry that blocks re-queuing.
+- The runner reuses only exact approved answers, flags new questions, and stops for CAPTCHA, MFA, sign-in, expired sessions,
+  legal attestations, missing evidence and employer form changes. It never clicks a final submit control, and the Worker rejects any
+  result that reports a submission.
+- `audits/e2e_audits.py` runs 25 end-to-end audits against the live Worker/Queue/D1 with synthetic `AUDIT-` data and local employer fixtures.
+
 ## ATS inventory from prior searches
 
 | ATS | Example | Browser test scope |

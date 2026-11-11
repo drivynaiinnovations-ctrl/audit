@@ -1,6 +1,11 @@
 name: RolePilot Browser Runner
 on:
   workflow_dispatch:
+    inputs:
+      run_live_audits:
+        description: 'Run the 25 end-to-end audits against the live Worker'
+        type: boolean
+        default: false
   schedule:
     - cron: '*/15 * * * *'
 concurrency:
@@ -9,9 +14,15 @@ concurrency:
 permissions:
   contents: read
 jobs:
-  audit-runner:
+  prepare-applications:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
+    env:
+      ROLEPILOT_WORKER_URL: https://rolepilot-staging-guard.drivyn-ai-innovations.workers.dev
+      ROLEPILOT_RUNNER_TOKEN: ${{ secrets.ROLEPILOT_RUNNER_TOKEN }}
+      ROLEPILOT_OPERATOR_TOKEN: ${{ secrets.ROLEPILOT_OPERATOR_TOKEN }}
+      WORKDAY_SESSIONS_JSON: ${{ secrets.WORKDAY_SESSIONS_JSON }}
+      ROLEPILOT_MAX_JOBS: '5'
     defaults:
       run:
         working-directory: rolepilot-submission-guard
@@ -20,8 +31,20 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Run COI, screening, session, and browser-runner audits
+      - name: Run COI, screening, session, and browser-runner unit audits
         run: python -m unittest discover -s tests -v
       - name: Verify live submission remains unavailable
-        run: python -c "from browser_planner import BrowserApplicationPlanner; assert callable(BrowserApplicationPlanner.submit)"
-
+        run: |
+          python -c "from browser_planner import BrowserApplicationPlanner; assert callable(BrowserApplicationPlanner.submit)"
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$ROLEPILOT_WORKER_URL/api/execute")" = 403
+      - name: Install Playwright Chromium
+        if: env.ROLEPILOT_RUNNER_TOKEN != ''
+        run: |
+          python -m pip install playwright==1.56.0
+          python -m playwright install --with-deps chromium
+      - name: Live end-to-end audits (synthetic data, no employer contact)
+        if: github.event_name == 'workflow_dispatch' && inputs.run_live_audits && env.ROLEPILOT_OPERATOR_TOKEN != ''
+        run: python audits/e2e_audits.py
+      - name: Prepare queued applications (stops before final submit)
+        if: github.event_name == 'schedule' && env.ROLEPILOT_RUNNER_TOKEN != ''
+        run: python prep_runner.py

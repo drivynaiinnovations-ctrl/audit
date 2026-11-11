@@ -2,6 +2,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test worker.test.mjs ashby-application.test.mjs"
+    "test": "node --test worker.test.mjs ashby-application.test.mjs coi.test.mjs"
   }
 }

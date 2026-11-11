@@ -2,7 +2,25 @@
 
 A fail-closed, standard-library Python submission preflight. No ATS submission or email sending is implemented. This repository is public: **do not commit personal data, real applications, API credentials or Google Sheets exports**.
 
-Run `python -m unittest discover -s tests -v`. The service uses SQLite with transactional duplicate reservations. It is a prototype, not a deployed integration with the actual RolePilot executor or Google Sheets. Production submission must remain disabled until authentication, data synchronization and executor enforcement are independently verified.
+Run `python -m unittest discover -s tests -v`. The service uses SQLite with transactional duplicate reservations. `coi_connector.py` imports unapplied COI roles through an injected authenticated Sheets reader, reads current status and duplicate gates, and selects the latest approved manifest résumé and supporting documents. It contains no credentials and no submission method. Production submission remains disabled.
+
+## COI database contract
+
+- Role source: `Opportunities!A1:AP5003`
+- Document authority: `Application Manifests!A1:AP250`
+- Excludes applied, closed, rejected, withdrawn, duplicate, invalid-source, and document-incomplete records
+- Prefers the latest manifest-approved résumé and cover letter, then falls back to the opportunity package
+- Requires an HTTPS source and résumé; otherwise it fails closed
+- CI repeats the complete import and selection audit 25 times and verifies deterministic, submission-free output
+
+## Screening and browser runner
+
+- Exact normalized matching reuses only explicitly approved screening answers
+- Genuinely new questions stop the workflow and are returned for approval
+- Multi-page preparation has a bounded page limit and always stops before final submission
+- Workday sign-in, CAPTCHA, MFA, and expired sessions produce distinct safe hold states
+- The scheduled GitHub browser-runner audit executes every 15 minutes with concurrency control
+- Cloudflare remains the authenticated planning/queue boundary; live submissions remain disabled
 
 ## ATS inventory from prior searches
 

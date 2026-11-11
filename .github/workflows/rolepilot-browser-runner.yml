@@ -1,0 +1,27 @@
+name: RolePilot Browser Runner
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/15 * * * *'
+concurrency:
+  group: rolepilot-browser-runner
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  audit-runner:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: rolepilot-submission-guard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run COI, screening, session, and browser-runner audits
+        run: python -m unittest discover -s tests -v
+      - name: Verify live submission remains unavailable
+        run: python -c "from browser_planner import BrowserApplicationPlanner; assert callable(BrowserApplicationPlanner.submit)"
+

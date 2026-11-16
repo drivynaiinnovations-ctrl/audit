@@ -1,7 +1,9 @@
 // Server-side Google access using a service account stored only as the Worker secret
-// GOOGLE_SERVICE_ACCOUNT_JSON. Read-only scopes. Nothing here is committed with credentials.
+// GOOGLE_SERVICE_ACCOUNT_JSON. The account is shared on exactly one spreadsheet (Editor) so the Worker can
+// write the three RolePilot prep columns back; Drive access is read-only (approved documents).
+// Nothing here is committed with credentials.
 
-const SCOPES = "https://www.googleapis.com/auth/spreadsheets.readonly https://www.googleapis.com/auth/drive.readonly";
+const SCOPES = "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.readonly";
 let cached = { token: "", exp: 0, email: "" };
 
 const b64url = (bytes) =>
@@ -42,8 +44,8 @@ export async function readCOI(env, fetcher = fetch) {
   if (!env.COI_SHEET_ID) throw new Error("COI_SHEET_ID_MISSING");
   const token = await accessToken(env, fetcher);
   const params = new URLSearchParams({ valueRenderOption: "FORMATTED_VALUE", majorDimension: "ROWS" });
-  params.append("ranges", "'Opportunities'!A1:CZ6000");
-  params.append("ranges", "'Application Manifests'!A1:CZ3000");
+  params.append("ranges", "'Opportunities'!A1:FZ6000");
+  params.append("ranges", "'Application Manifests'!A1:FZ3000");
   const res = await fetcher(
     `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(env.COI_SHEET_ID)}/values:batchGet?${params}`,
     { headers: { authorization: "Bearer " + token } },
@@ -81,6 +83,54 @@ export async function fetchDocument(env, url, fetcher = fetch) {
   if (!res.ok) throw new Error("DOCUMENT_DOWNLOAD_FAILED");
   const filename = (native ? String(name).replace(/\.[a-z0-9]+$/i, "") + ".pdf" : String(name)).replace(/[^\w .()-]/g, "_");
   return { body: res.body, filename, contentType: native ? "application/pdf" : mimeType || "application/octet-stream" };
+}
+
+/** Minimal Sheets client for the COI spreadsheet. Injected into write-back so it can be tested offline. */
+export function sheetsClient(env, fetcher = fetch) {
+  if (!env.COI_SHEET_ID) throw new Error("COI_SHEET_ID_MISSING");
+  const base = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(env.COI_SHEET_ID)}`;
+  const call = async (path, init = {}) => {
+    const token = await accessToken(env, fetcher);
+    const res = await fetcher(base + path, { ...init, headers: { authorization: "Bearer " + token, "content-type": "application/json" } });
+    if (res.status === 403 || res.status === 404) throw new Error("COI_SHEET_NOT_SHARED_WITH_SERVICE_ACCOUNT");
+    if (res.status === 429 || res.status >= 500) throw new Error("COI_SHEETS_RETRYABLE_" + res.status);
+    if (!res.ok) {
+      // Google's error status (e.g. INVALID_ARGUMENT) only; never echo request or sheet content.
+      const status = await res.json().then((b) => String(b?.error?.status || "").replace(/[^A-Z_]/g, ""), () => "");
+      throw new Error("COI_SHEETS_FAILED_" + res.status + (status ? "_" + status : ""));
+    }
+    return res.json();
+  };
+  return {
+    /** Returns one array per range. COLUMNS => each entry is a column's cells (index 0 = row 1). */
+    async get(ranges, majorDimension = "ROWS") {
+      const p = new URLSearchParams({ valueRenderOption: "FORMATTED_VALUE", majorDimension });
+      for (const r of ranges) p.append("ranges", r);
+      const { valueRanges = [] } = await call(`/values:batchGet?${p}`);
+      return ranges.map((_, i) => valueRanges[i]?.values || []);
+    },
+    /** RAW write of explicit single-cell or row ranges. */
+    async update(data) {
+      return call("/values:batchUpdate", { method: "POST", body: JSON.stringify({ valueInputOption: "RAW", data }) });
+    },
+    /** Make sure a tab's grid has at least `columns` columns (adds empty columns at the end only). */
+    async ensureColumnCount(tab, columns) {
+      const meta = await call(`?fields=${encodeURIComponent("sheets.properties(sheetId,title,gridProperties.columnCount)")}`);
+      const sheet = (meta.sheets || []).find((s) => s.properties.title === tab);
+      if (!sheet) throw new Error("COI_SCHEMA_MISSING");
+      const have = sheet.properties.gridProperties.columnCount;
+      if (have >= columns) return { added: 0 };
+      await call(":batchUpdate", { method: "POST", body: JSON.stringify({ requests: [
+        { appendDimension: { sheetId: sheet.properties.sheetId, dimension: "COLUMNS", length: columns - have } }] }) });
+      return { added: columns - have };
+    },
+    /** Insert one new row after the tab's existing table (never overwrites). */
+    async append(tab, row) {
+      const p = new URLSearchParams({ valueInputOption: "RAW", insertDataOption: "INSERT_ROWS" });
+      return call(`/values/${encodeURIComponent(`'${tab.replace(/'/g, "''")}'!A1`)}:append?${p}`,
+        { method: "POST", body: JSON.stringify({ majorDimension: "ROWS", values: [row] }) });
+    },
+  };
 }
 
 export function resetGoogleCache() { cached = { token: "", exp: 0, email: "" }; }

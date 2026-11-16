@@ -93,6 +93,38 @@ export function parseScreeningAnswers(value) {
   return { answers, unreadable };
 }
 
+// Application Manifests keep approved applicant values in structured columns. Each maps to the exact question labels
+// it answers (matching stays exact after normalization). Yes/no columns are used only when the value is literally
+// yes or no; a two-word Full Name also answers First/Last Name. Anything else stays a new question for approval.
+const MANIFEST_TEXT_ANSWERS = {
+  "Full Name": ["Full Name", "Name", "Full Legal Name", "Legal Name"],
+  "Email": ["Email", "Email Address"],
+  "Phone": ["Phone", "Phone Number", "Mobile Phone", "Mobile Number"],
+  "Street Address": ["Address", "Street Address"],
+  "Candidate Location": ["Location", "Current Location"],
+};
+const MANIFEST_YES_NO_ANSWERS = {
+  "Work Authorization": ["Are you legally authorized to work in the United States?", "Are you authorized to work in the United States?",
+    "Are you legally authorized to work in the US?", "Are you authorized to work in the US?"],
+  "Sponsorship": ["Will you now or in the future require sponsorship?", "Will you now or in the future require visa sponsorship?",
+    "Will you now or in the future require sponsorship for employment visa status?", "Do you require visa sponsorship?"],
+};
+
+export function manifestAnswers(manifest) {
+  const answers = {};
+  for (const [column, labels] of Object.entries(MANIFEST_TEXT_ANSWERS)) {
+    const v = text(manifest[column]);
+    if (v) for (const l of labels) answers[l] = v;
+  }
+  const name = text(manifest["Full Name"]).split(/\s+/).filter(Boolean);
+  if (name.length === 2) Object.assign(answers, { "First Name": name[0], "Last Name": name[1] });
+  for (const [column, labels] of Object.entries(MANIFEST_YES_NO_ANSWERS)) {
+    const v = key(manifest[column]);
+    if (v === "yes" || v === "no") for (const l of labels) answers[l] = v === "yes" ? "Yes" : "No";
+  }
+  return answers;
+}
+
 const pick = (record, pattern) =>
   Object.keys(record).filter((h) => h !== "__row" && pattern.test(h)).map((h) => record[h]);
 
@@ -180,8 +212,9 @@ export function evaluateCOI(opportunityValues, manifestValues, { audit = false }
       continue;
     }
 
-    const screening = pick(manifest, /screening answers|approved answers/i).map(parseScreeningAnswers);
-    const approvedAnswers = Object.assign({}, ...screening.map((s) => s.answers));
+    const screening = pick(manifest, /screening answers|approved answers|answer map/i).map(parseScreeningAnswers);
+    // Explicit question -> answer entries win over the structured-column defaults.
+    const approvedAnswers = Object.assign({}, manifestAnswers(manifest), ...screening.map((s) => s.answers));
 
     seenId.add(id);
     seenIdentity.add(identity);

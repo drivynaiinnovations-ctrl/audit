@@ -58,11 +58,19 @@ COLLECT_JS = """() => {
       : type === 'checkbox' ? el.checked : !!el.value;
     const options = el.tagName === 'SELECT' ? [...el.options].map(o => o.text.trim()).filter(Boolean)
       : group ? [...document.getElementsByName(el.name)].map(r => r.labels?.[0]?.innerText.trim() || r.value) : [];
-    out.push({ index: el.dataset.rpIndex, label, type: group ? 'radio' : type, required: !!required, filled, options, name: el.name || '' });
+    const hint = type !== 'file' ? '' : [label, el.id, el.name, el.getAttribute('data-qa') || '',
+      (el.closest('[role=group]')?.getAttribute('aria-labelledby') || '').split(' ').map(id => document.getElementById(id)?.innerText || '').join(' '),
+      el.closest('fieldset')?.querySelector('legend')?.innerText || '',
+      document.getElementById(el.id + '-label')?.innerText || document.getElementById('upload-label-' + el.id)?.innerText || '']
+      .join(' ').replace(/[_-]+/g, ' ').replace(/\\s+/g, ' ').trim();
+    out.push({ index: el.dataset.rpIndex, label, hint, type: group ? 'radio' : type, required: !!required, filled, options, name: el.name || '' });
   });
   const buttons = [...document.querySelectorAll('button, input[type=submit], input[type=button], a[role=button], a')]
     .filter(visible).map(b => (b.innerText || b.value || b.getAttribute('aria-label') || '').replace(/\\s+/g, ' ').trim());
-  return { fields: out, buttons, text: document.body ? document.body.innerText.slice(0, 20000) : '',
+  const captchaSrc = /recaptcha|hcaptcha|challenges\\.cloudflare\\.com|captcha|arkoselabs|funcaptcha/i;
+  const captcha = [...document.querySelectorAll('iframe')].some(f => { const s = getComputedStyle(f); const r = f.getBoundingClientRect();
+    return captchaSrc.test(f.src || '') && s.visibility !== 'hidden' && s.display !== 'none' && Number(s.opacity) > 0.1 && r.width >= 50 && r.height >= 50; });
+  return { fields: out, buttons, captcha, text: document.body ? document.body.innerText.slice(0, 20000) : '',
            password: [...document.querySelectorAll('input[type=password]')].some(visible),
            otp: [...document.querySelectorAll('input[autocomplete=one-time-code]')].some(visible) };
 }"""
@@ -123,17 +131,33 @@ class Preparer:
         self.documents = documents  # callable(slot, index) -> local path or None
         self.vault_answers = {normalize_question(q): a for q, a in (job.get("approved_answers") or {}).items() if str(a).strip()}
         self.session_supplied = session_supplied
+        self.attached = []
         expected = job.get("form_fingerprint") or ""
         self.expected_fingerprints = [x.strip() for x in expected.split(",") if x.strip()]
 
     def result(self, status, pages, **extra):
-        return {"status": status, "pages": pages, "submitted": False, "final_submit_clicked": False, **extra}
+        return {"status": status, "pages": pages, "submitted": False, "final_submit_clicked": False,
+                "attached": sorted(set(self.attached)), **extra}
 
     def snapshot(self):
-        frames_hold = any(CAPTCHA_FRAME.search(f.url or "") for f in self.page.frames if f != self.page.main_frame)
         snap = self.page.evaluate(COLLECT_JS)
-        snap["captcha_frame"] = frames_hold
+        snap["captcha_frame"] = snap.get("captcha", False)
         return snap
+
+    def settled_snapshot(self, timeout=12):
+        """Single-page ATS apps (Workday) render after load; wait until there is something actionable."""
+        deadline = time.monotonic() + timeout
+        while True:
+            self.page.wait_for_timeout(300)
+            try:
+                snap = self.snapshot()
+            except Exception:
+                snap = None  # navigation in progress
+            if snap and (snap["fields"] or snap["password"] or snap["otp"] or snap["captcha_frame"] or any(
+                    START.match(b) or NEXT.match(b) or FINAL_SUBMIT.search(b) or SIGN_IN_TEXT.match(b) for b in snap["buttons"])):
+                return snap
+            if time.monotonic() >= deadline:
+                return snap or self.snapshot()
 
     def session_hold(self, snap):
         if snap["captcha_frame"] or CAPTCHA_TEXT.search(snap["text"]):
@@ -155,8 +179,7 @@ class Preparer:
         starts = 0
         page_number = 0
         while page_number < MAX_PAGES:
-            self.page.wait_for_timeout(300)
-            snap = self.snapshot()
+            snap = self.settled_snapshot()
             hold = self.session_hold(snap)
             if hold:
                 return self.result(hold, page_number)
@@ -229,9 +252,10 @@ class Preparer:
             if field["type"] == "file":
                 if field["filled"]:
                     continue
-                if RESUME_LABEL.search(field["label"]):
+                hint = field.get("hint") or field["label"]
+                if RESUME_LABEL.search(hint):
                     slot, index = "resume", 0
-                elif COVER_LABEL.search(field["label"]):
+                elif COVER_LABEL.search(hint):
                     slot, index = "cover_letter", 0
                 elif field["required"]:
                     slot, index = "supporting", supporting_used
@@ -244,6 +268,7 @@ class Preparer:
                         missing.append(field["label"] or slot)
                     continue
                 control.set_input_files(path)
+                self.attached.append(slot)
                 continue
             if field["filled"]:
                 continue

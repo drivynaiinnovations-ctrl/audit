@@ -3,10 +3,14 @@
 // submission are rejected and recorded as violations.
 
 import { evaluateCOI } from "./coi.mjs";
-import { readCOI, fetchDocument } from "./google.mjs";
+import { readCOI, fetchDocument, sheetsClient } from "./google.mjs";
+import { writeBack } from "./writeback.mjs";
 
 const LEASE_SECONDS = 900;
 const MAX_ATTEMPTS = 3;
+const WRITEBACK_MAX_ATTEMPTS = 8;
+export const SYNTHETIC_PREFIX = "RP-SYNTH-";
+const ATTACHABLE = new Set(["resume", "cover_letter", "supporting"]);
 export const RESULT_STATUSES = new Set([
   "READY_FOR_REVIEW_NOT_SUBMITTED",
   "HOLD_NEW_QUESTIONS", "HOLD_CAPTCHA", "HOLD_MFA", "HOLD_SIGN_IN", "HOLD_SESSION_EXPIRED",
@@ -22,18 +26,29 @@ async function event(env, { job_id = null, opportunity = null, event: name, deta
 }
 
 /** Import COI rows and enqueue eligible ones. `fixture` is only honored for audit runs. */
-export async function importAndEnqueue(env, { audit = false, fixture = null, dryRun = false } = {}) {
-  const source = audit ? fixture : await readCOI(env);
+export async function importAndEnqueue(env, { audit = false, fixture = null, dryRun = false, sheetValues = null } = {}) {
+  // sheetValues: already-read live values (internal callers/tests only; the HTTP route never passes it).
+  const source = audit ? fixture : (sheetValues ?? await readCOI(env));
   if (!source?.opportunities || !source?.manifests) throw new Error("COI_SOURCE_MISSING");
   const { eligible, blocked, counts } = evaluateCOI(source.opportunities, source.manifests, { audit });
   if (dryRun) {
     const tally = {};
     for (const b of blocked) tally[b.reason] = (tally[b.reason] || 0) + 1;
-    return { dry_run: true, eligible: eligible.length, blocked_summary: tally, counts, submissions_enabled: false };
+    return { dry_run: true, eligible: eligible.length,
+      // Column names only (schema diagnostics); never row data.
+      manifest_headers: (source.manifests[0] || []).map((h) => String(h).trim()).filter(Boolean),
+      synthetic_eligible: eligible.filter((e) => e.opportunity_id.startsWith(SYNTHETIC_PREFIX)).map((e) => e.opportunity_id),
+      import_scope: audit || env.PREP_IMPORT_SCOPE === "all" ? "all" : "synthetic", blocked_summary: tally, counts, submissions_enabled: false };
   }
 
   const queued = [];
+  // Until PREP_IMPORT_SCOPE=all, live imports queue only clearly labeled synthetic verification roles.
+  const liveScope = audit || env.PREP_IMPORT_SCOPE === "all";
   for (const job of eligible) {
+    if (!liveScope && !job.opportunity_id.startsWith(SYNTHETIC_PREFIX)) {
+      blocked.push({ opportunity_id: job.opportunity_id, row: job.source_row, reason: "HOLD_LIVE_IMPORT_NOT_ENABLED" });
+      continue;
+    }
     const prior = await env.DB.prepare(
       "SELECT 'reservation' AS src FROM submission_reservations WHERE opportunity=? OR url=? OR (employer||'|'||role)=?" +
       "UNION ALL SELECT 'prep' FROM prep_registry WHERE opportunity=? OR identity=? OR url=? LIMIT 1",
@@ -67,6 +82,16 @@ export async function importAndEnqueue(env, { audit = false, fixture = null, dry
 export async function consume(batch, env) {
   for (const message of batch.messages) {
     const job = message.body;
+    if (job?.kind === "writeback" && typeof job.job_id === "string") {
+      try {
+        const r = await processWriteback(env, job.job_id);
+        if (r.retry) message.retry({ delaySeconds: Math.min(300, 30 * 2 ** Math.max(0, (message.attempts || 1) - 1)) });
+        else message.ack();
+      } catch {
+        message.retry({ delaySeconds: 60 });
+      }
+      continue;
+    }
     if (job?.kind !== "prep" || typeof job.opportunity_id !== "string") { message.ack(); continue; }
     try {
       const id = crypto.randomUUID();
@@ -99,14 +124,19 @@ export function validateResult(result) {
   if (!RESULT_STATUSES.has(result.status)) return "INVALID_STATUS";
   if (!Number.isInteger(result.pages) || result.pages < 0 || result.pages > 50) return "INVALID_PAGES";
   if (result.new_questions && (!Array.isArray(result.new_questions) || result.new_questions.length > 100)) return "INVALID_QUESTIONS";
+  if (result.attached && (!Array.isArray(result.attached) || result.attached.some((a) => !ATTACHABLE.has(a)))) return "INVALID_ATTACHED";
   return "";
 }
 
 export async function complete(env, body) {
-  const row = await env.DB.prepare("SELECT id, opportunity, status, lease_until, audit FROM prep_jobs WHERE id=?").bind(String(body?.job_id || "")).first();
+  const row = await env.DB.prepare("SELECT id, opportunity, status, lease_until, audit, result FROM prep_jobs WHERE id=?").bind(String(body?.job_id || "")).first();
   if (!row) return { status: 404, body: { decision: "HOLD", reason: "JOB_NOT_FOUND" } };
-  if (row.status !== "CLAIMED" || row.lease_until < now()) return { status: 409, body: { decision: "HOLD", reason: "LEASE_NOT_HELD" } };
   const invalid = validateResult(body.result);
+  // A retried completion of an already-recorded result is acknowledged without a second record or write-back.
+  if (!invalid && row.result && row.status === body.result.status && RESULT_STATUSES.has(row.status)) {
+    return { status: 200, body: { decision: "RECORDED", status: row.status, duplicate: true, submissions_enabled: false } };
+  }
+  if (row.status !== "CLAIMED" || row.lease_until < now()) return { status: 409, body: { decision: "HOLD", reason: "LEASE_NOT_HELD" } };
   if (invalid) {
     const violation = invalid === "SUBMISSION_VIOLATION";
     if (violation) await env.DB.prepare("UPDATE prep_jobs SET status='VIOLATION', updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(row.id).run();
@@ -116,12 +146,74 @@ export async function complete(env, body) {
   const result = {
     status: body.result.status, pages: body.result.pages, submitted: false, final_submit_clicked: false,
     new_questions: (body.result.new_questions || []).map((q) => String(q).slice(0, 300)),
+    attached: [...new Set(body.result.attached || [])],
     detail: String(body.result.detail || "").slice(0, 300),
   };
-  await env.DB.prepare("UPDATE prep_jobs SET status=?, result=?, lease_until=0, updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='CLAIMED'")
+  const updated = await env.DB.prepare("UPDATE prep_jobs SET status=?, result=?, lease_until=0, updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='CLAIMED'")
     .bind(result.status, JSON.stringify(result), row.id).run();
+  if (updated.meta.changes !== 1) return { status: 409, body: { decision: "HOLD", reason: "LEASE_NOT_HELD" } };
   await event(env, { job_id: row.id, opportunity: row.opportunity, event: result.status, detail: "pages " + result.pages, audit: row.audit });
-  return { status: 200, body: { decision: "RECORDED", status: result.status, submissions_enabled: false } };
+  // Tracker write-back: one record per job (primary key), delivered through the queue with retries + cron sweep.
+  const state = row.audit ? "SKIPPED_AUDIT" : "PENDING";
+  const wb = await env.DB.prepare("INSERT OR IGNORE INTO prep_writeback(job_id,opportunity,status,result_at,state,audit) VALUES (?,?,?,?,?,?)")
+    .bind(row.id, row.opportunity, result.status, new Date().toISOString(), state, row.audit ? 1 : 0).run();
+  if (wb.meta.changes === 1 && !row.audit) {
+    try { await env.PREP_QUEUE.send({ kind: "writeback", job_id: row.id }, { contentType: "json" }); } catch { /* cron sweep retries */ }
+  }
+  return { status: 200, body: { decision: "RECORDED", status: result.status, writeback: state, submissions_enabled: false } };
+}
+
+/** Deliver one tracker write-back. Safe to call repeatedly for the same job. */
+export async function processWriteback(env, jobId, sheets = null) {
+  const wb = await env.DB.prepare(
+    "SELECT w.job_id, w.opportunity, w.status, w.result_at, w.state, w.attempts, j.payload, j.result FROM prep_writeback w " +
+    "JOIN prep_jobs j ON j.id = w.job_id WHERE w.job_id=?").bind(jobId).first();
+  if (!wb || !["PENDING", "RETRY"].includes(wb.state)) return { state: wb?.state || "NOT_FOUND", retry: false };
+  const payload = JSON.parse(wb.payload);
+  const last = await env.DB.prepare(
+    "SELECT cell_status AS status, result_at AS at FROM prep_writeback WHERE opportunity=? AND state='WRITTEN' AND job_id<>? " +
+    "ORDER BY written_at DESC LIMIT 1").bind(wb.opportunity, jobId).first();
+  let out;
+  try {
+    out = await writeBack(sheets || sheetsClient(env), {
+      job_id: jobId, opportunity: wb.opportunity, identity: payload.identity, manifest_id: payload.manifest_id,
+      result: JSON.parse(wb.result), result_at: wb.result_at,
+    }, last || null);
+  } catch (e) {
+    const reason = /^[A-Z_0-9]+$/.test(e?.message || "") ? e.message : "WRITEBACK_ERROR";
+    const attempts = wb.attempts + 1;
+    const state = attempts >= WRITEBACK_MAX_ATTEMPTS ? "FAILED" : "RETRY";
+    await env.DB.prepare("UPDATE prep_writeback SET state=?, attempts=?, detail=?, updated_at=CURRENT_TIMESTAMP WHERE job_id=? AND state IN ('PENDING','RETRY')")
+      .bind(state, attempts, reason, jobId).run();
+    await event(env, { job_id: jobId, opportunity: wb.opportunity, event: "WRITEBACK_" + state, detail: reason });
+    return { state, retry: state === "RETRY", detail: reason };
+  }
+  const r = await env.DB.prepare(
+    "UPDATE prep_writeback SET state=?, attempts=attempts+1, sheet_row=?, detail=?, cell_status=?, " +
+    "written_at=CASE WHEN ?='WRITTEN' THEN CURRENT_TIMESTAMP ELSE written_at END, updated_at=CURRENT_TIMESTAMP " +
+    "WHERE job_id=? AND state IN ('PENDING','RETRY')")
+    .bind(out.state, out.row ?? null, out.detail ?? null, out.state === "WRITTEN" ? "PREP " + wb.status : null, out.state, jobId).run();
+  if (r.meta.changes === 1) await event(env, { job_id: jobId, opportunity: wb.opportunity, event: "WRITEBACK_" + out.state, detail: "row " + (out.row ?? "-") });
+  return { ...out, retry: false };
+}
+
+/** Cron safety net: re-deliver write-backs whose queue message was lost or exhausted. */
+export async function sweepWritebacks(env, limit = 20) {
+  const { results } = await env.DB.prepare(
+    "SELECT job_id FROM prep_writeback WHERE state IN ('PENDING','RETRY') AND audit=0 AND updated_at < datetime('now','-2 minutes') " +
+    "ORDER BY updated_at LIMIT ?").bind(limit).all();
+  const out = [];
+  for (const { job_id } of results) out.push({ job_id, ...(await processWriteback(env, job_id)) });
+  return out;
+}
+
+export async function writebackStatus(env, opportunity) {
+  const { results } = await env.DB.prepare(
+    "SELECT job_id, status, result_at, state, attempts, sheet_row, detail, written_at FROM prep_writeback WHERE opportunity=? ORDER BY result_at")
+    .bind(opportunity).all();
+  const jobs = await env.DB.prepare("SELECT count(*) AS n FROM prep_jobs WHERE opportunity=?").bind(opportunity).first();
+  const registry = await env.DB.prepare("SELECT count(*) AS n FROM prep_registry WHERE opportunity=?").bind(opportunity).first();
+  return { opportunity, jobs: jobs.n, registry: registry.n, writebacks: results };
 }
 
 /** Serve one approved document belonging to a currently claimed job. */
@@ -142,6 +234,7 @@ export async function summary(env, audit) {
 
 export async function purgeAudit(env) {
   await env.DB.batch([
+    env.DB.prepare("DELETE FROM prep_writeback WHERE audit=1"),
     env.DB.prepare("DELETE FROM prep_jobs WHERE audit=1"),
     env.DB.prepare("DELETE FROM prep_registry WHERE audit=1"),
   ]);

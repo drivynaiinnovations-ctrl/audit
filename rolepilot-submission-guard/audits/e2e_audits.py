@@ -188,6 +188,7 @@ def main():
 
     site = FixtureSite()
     status, _ = call("/api/audit/purge", {})
+    baseline_violations = call("/api/prep/summary", {"audit": True})[1].get("submission_violations", 0)
     assert status == 200, "purge failed"
 
     # A01 connectivity and lockouts on the live Worker
@@ -320,7 +321,7 @@ def main():
     all_false = all(o["result"]["submitted"] is False and o["result"]["final_submit_clicked"] is False for o in outcomes.values())
     audit(25, "No application submitted: zero final-submit requests, all results submitted=false, Worker rejects a submitted claim",
           not site.finals and all_false and len(outcomes) == 13 and s_probe == 422
-          and probe_resp.get("reason") == "SUBMISSION_VIOLATION" and summary.get("submission_violations") == 1
+          and probe_resp.get("reason") == "SUBMISSION_VIOLATION" and summary.get("submission_violations") == baseline_violations + 1
           and summary.get("jobs", {}).get("VIOLATION") == 1 and call("/api/execute", {}, token=None)[0] == 403,
           f"finals={len(site.finals)} escapes={set(site.escapes)} outcomes={len(outcomes)} probe={s_probe} summary={summary}")
 

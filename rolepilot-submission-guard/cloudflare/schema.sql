@@ -32,3 +32,21 @@ CREATE TRIGGER IF NOT EXISTS prep_events_no_update BEFORE UPDATE ON prep_events
   BEGIN SELECT RAISE(ABORT, 'immutable audit'); END;
 CREATE TRIGGER IF NOT EXISTS prep_events_no_delete BEFORE DELETE ON prep_events WHEN OLD.audit = 0
   BEGIN SELECT RAISE(ABORT, 'immutable audit'); END;
+-- Tracker write-back: one row per completed job. cell_status/result_at record exactly what RolePilot wrote, so a
+-- later manual edit in the sheet is recognised and preserved.
+CREATE TABLE IF NOT EXISTS prep_writeback (
+  job_id TEXT PRIMARY KEY,
+  opportunity TEXT NOT NULL,
+  status TEXT NOT NULL,
+  result_at TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'PENDING',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  sheet_row INTEGER,
+  cell_status TEXT,
+  detail TEXT,
+  written_at TEXT,
+  audit INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS prep_writeback_state ON prep_writeback(state, audit, updated_at);
+CREATE INDEX IF NOT EXISTS prep_writeback_opp ON prep_writeback(opportunity, state);

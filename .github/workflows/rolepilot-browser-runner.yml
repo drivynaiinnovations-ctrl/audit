@@ -31,6 +31,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Require runner credentials (a skipped preparation run must not report success)
+        if: github.event_name == 'schedule' || inputs.run_live_audits
+        run: |
+          if [ -z "$ROLEPILOT_RUNNER_TOKEN" ]; then
+            echo "::error::GitHub secret ROLEPILOT_RUNNER_TOKEN is not set; queued preparation jobs were NOT processed."
+            exit 1
+          fi
+          if [ "${{ inputs.run_live_audits }}" = "true" ] && [ -z "$ROLEPILOT_OPERATOR_TOKEN" ]; then
+            echo "::error::GitHub secret ROLEPILOT_OPERATOR_TOKEN is not set; live audits cannot run."
+            exit 1
+          fi
+          echo "Runner credentials present."
       - name: Run COI, screening, session, and browser-runner unit audits
         run: python -m unittest discover -s tests -v
       - name: Verify live submission remains unavailable

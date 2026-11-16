@@ -27,7 +27,8 @@ Run `python -m unittest discover -s tests -v`. The service uses SQLite with tran
 `Career Opportunity Database` -> Worker `/api/coi/import` (cron every 30 min) -> Cloudflare Queue `rolepilot-prep`
 (DLQ `rolepilot-prep-dlq`) -> queue consumer -> D1 `prep_jobs` -> scheduled GitHub runner (`prep_runner.py`, every 15 min).
 
-- Google access is a read-only service account held only as the Worker secret `GOOGLE_SERVICE_ACCOUNT_JSON`; the sheet ID is the secret `COI_SHEET_ID`.
+- Google access is a dedicated service account (no project roles) held only as the Worker secret `GOOGLE_SERVICE_ACCOUNT_JSON`. It is shared as
+  Editor on the one COI spreadsheet (for write-back) and as Viewer on approved documents; the sheet ID is the secret `COI_SHEET_ID`.
 - Import rules (`cloudflare/coi.mjs`): only unapplied, active rows with `Application Authorization` explicitly authorized; applied, rejected,
   closed, withdrawn, duplicate, unauthorized and document-incomplete rows are blocked. Application Manifests are authoritative for the
   résumé, cover letter, supporting documents and approved screening answers.
@@ -36,6 +37,26 @@ Run `python -m unittest discover -s tests -v`. The service uses SQLite with tran
   legal attestations, missing evidence and employer form changes. It never clicks a final submit control, and the Worker rejects any
   result that reports a submission.
 - `audits/e2e_audits.py` runs 25 end-to-end audits against the live Worker/Queue/D1 with synthetic `AUDIT-` data and local employer fixtures.
+
+## Tracker write-back (`cloudflare/writeback.mjs`)
+
+Runner result -> `/api/runner/complete` -> D1 `prep_writeback` (one row per job) -> queue message `{kind:"writeback"}` (+ cron sweep)
+-> Opportunities columns `RolePilot Prep Status`, `RolePilot Prep Updated At`, `RolePilot Prep Result` only.
+
+- The row is located by `Opportunity ID` on every attempt and its company/role identity is verified, so sorting/moving rows is safe.
+  The ID is re-checked immediately before writing and the write is verified afterwards; a sort that lands in between is detected,
+  the wrong row is restored from the pre-write snapshot, and the attempt is retried.
+- Idempotent: a repeated runner completion is acknowledged as a duplicate; a redelivered write-back with the same job marker performs no update.
+- Newer timestamps and manual edits (any value RolePilot did not write) are preserved (`SKIPPED_NEWER` / `SKIPPED_MANUAL`).
+- Status, Applied, Applied At, Application Authorization and every other column are never written. A result claiming a submission is
+  rejected before write-back. Status values are always `PREP <status>`; `READY_FOR_REVIEW_NOT_SUBMITTED` never means submitted.
+- `PREP_IMPORT_SCOPE` (Worker var): unset = live imports queue only `RP-SYNTH-` verification rows; `all` = every eligible row.
+- Approved answers come from the manifest's structured columns (Full Name, Email, Phone, Street Address, Candidate Location;
+  Work Authorization / Sponsorship only when literally yes/no) and the `Live Field Inventory / Answer Map` (explicit entries win).
+- Operator routes: `/api/coi/writeback/setup` (adds the three headers once), `/api/coi/writeback/status`, `/api/coi/writeback/sweep`,
+  `/api/coi/synthetic/seed` (appends a labeled `RP-SYNTH-` role whose form is served by the Worker at `/synthetic/apply/<id>`).
+- `audits/ats_live_structure.py` checks current Greenhouse/Lever/Workday routes and form structure observe-only (no data entry,
+  application POSTs blocked). Patterns it found are pinned in `browser_tests/test_live_patterns.py`.
 
 ## ATS inventory from prior searches
 

@@ -95,3 +95,24 @@ test("pipeline routes require their own tokens and fixtures need audit mode", as
   assert.equal((await live.json()).reason, "GOOGLE_CREDENTIAL_MISSING");
   assert.equal((await worker.fetch(new Request("https://x.test/api/execute", { method: "POST" }), env)).status, 403);
 });
+
+test("structured manifest columns become exact approved answers; ambiguous values do not", async () => {
+  const { manifestAnswers } = await import("./coi.mjs");
+  const a = manifestAnswers({ "Full Name": "Sam Example", Email: "sam@example.test", "Work Authorization": "Yes", Sponsorship: "No" });
+  assert.equal(a["First Name"], "Sam");
+  assert.equal(a["Last Name"], "Example");
+  assert.equal(a["Email Address"], "sam@example.test");
+  assert.equal(a["Are you legally authorized to work in the United States?"], "Yes");
+  assert.equal(a["Will you now or in the future require sponsorship?"], "No");
+  const b = manifestAnswers({ "Full Name": "Mary Ann Example", "Work Authorization": "US citizen", Sponsorship: "" });
+  assert.equal(b["First Name"], undefined, "three-word names are not split");
+  assert.equal(b["Full Name"], "Mary Ann Example");
+  assert.equal(b["Are you legally authorized to work in the United States?"], undefined, "non yes/no values are not guessed");
+});
+
+test("Answer Map entries override structured defaults", () => {
+  const MH2 = ["Manifest ID", "Opportunity ID", "Approved Resume", "Approved Cover Letter", "Full Name", "Live Field Inventory / Answer Map"];
+  const r = evaluateCOI([H, opp("x", "A")], [MH2, ["m-x", "x", R, C, "Sam Example", JSON.stringify({ "First Name": "Samuel" })]]);
+  assert.equal(r.eligible[0].approved_answers["First Name"], "Samuel");
+  assert.equal(r.eligible[0].approved_answers["Last Name"], "Example");
+});

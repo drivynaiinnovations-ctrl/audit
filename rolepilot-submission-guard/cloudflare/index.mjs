@@ -2,7 +2,10 @@
 // Existing guard routes (health, plan, approval, execute=403) are delegated unchanged.
 
 import guard from "./worker.js";
-import { importAndEnqueue, consume, claim, complete, documentFor, summary, purgeAudit } from "./prep.mjs";
+import { importAndEnqueue, consume, claim, complete, documentFor, summary, purgeAudit, sweepWritebacks, writebackStatus, processWriteback } from "./prep.mjs";
+import { sheetsClient } from "./google.mjs";
+import { ensureColumns, readBack } from "./writeback.mjs";
+import { seedSynthetic, syntheticPage, syntheticEvent, SYNTH_ID } from "./synthetic.mjs";
 
 const json = (v, status = 200) =>
   Response.json(v, { status, headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
@@ -27,6 +30,10 @@ const ROUTES = {
   "/api/coi/import": "OPERATOR_TOKEN",
   "/api/prep/summary": "OPERATOR_TOKEN",
   "/api/audit/purge": "OPERATOR_TOKEN",
+  "/api/coi/writeback/setup": "OPERATOR_TOKEN",
+  "/api/coi/writeback/status": "OPERATOR_TOKEN",
+  "/api/coi/writeback/sweep": "OPERATOR_TOKEN",
+  "/api/coi/synthetic/seed": "OPERATOR_TOKEN",
   "/api/runner/claim": "RUNNER_TOKEN",
   "/api/runner/complete": "RUNNER_TOKEN",
   "/api/runner/document": "RUNNER_TOKEN",
@@ -34,7 +41,22 @@ const ROUTES = {
 
 export default {
   async fetch(req, env, ctx) {
-    const { pathname } = new URL(req.url);
+    const url = new URL(req.url);
+    const { pathname } = url;
+    // Synthetic employer form for the labeled verification role only (never a real employer).
+    if (pathname.startsWith("/synthetic/")) {
+      const id = pathname.slice("/synthetic/apply/".length);
+      if (req.method === "GET" && pathname.startsWith("/synthetic/apply/") && SYNTH_ID.test(id)) {
+        return new Response(syntheticPage(id), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store",
+          "x-robots-tag": "noindex", "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; connect-src 'self'" } });
+      }
+      if (req.method === "POST" && (pathname === "/synthetic/step" || pathname === "/synthetic/final")) {
+        let b = {};
+        try { b = await body(req, 4096); } catch { /* ignore */ }
+        return json({ recorded: await syntheticEvent(env, pathname.endsWith("final") ? "final" : "step", b) });
+      }
+      return json({ decision: "DENY", reason: "NOT_FOUND" }, 404);
+    }
     const secretName = ROUTES[pathname];
     if (!secretName) return guard.fetch(req, env, ctx);
     if (req.method !== "POST") return json({ decision: "DENY", reason: "METHOD_NOT_ALLOWED" }, 405);
@@ -55,6 +77,21 @@ export default {
         }
         case "/api/prep/summary": return json(await summary(env, audit));
         case "/api/audit/purge": return json(await purgeAudit(env));
+        case "/api/coi/writeback/setup": return json({ decision: "OK", ...(await ensureColumns(sheetsClient(env))) });
+        case "/api/coi/writeback/sweep": return json({ decision: "OK", swept: await sweepWritebacks(env) });
+        case "/api/coi/writeback/status": {
+          const id = String(input.opportunity_id || "");
+          if (!id) return json({ decision: "HOLD", reason: "OPPORTUNITY_ID_REQUIRED" }, 400);
+          if (input.job_id) await processWriteback(env, String(input.job_id));
+          // Opportunity IDs, statuses and row numbers only; never other tracker columns.
+          const rows = (await readBack(sheetsClient(env), id)).map(({ row, status, at, result }) => ({ row, status, at, result }));
+          return json({ ...(await writebackStatus(env, id)), sheet: rows });
+        }
+        case "/api/coi/synthetic/seed": {
+          const r = await seedSynthetic(sheetsClient(env), { id: String(input.opportunity_id || ""), origin: url.origin,
+            resume: String(input.resume || ""), cover: String(input.cover_letter || "") });
+          return json({ decision: "SEEDED", ...r });
+        }
         case "/api/runner/claim": {
           const job = await claim(env, { audit });
           return job ? json({ decision: "CLAIMED", ...job, submissions_enabled: false }) : json({ decision: "IDLE" });
@@ -85,6 +122,15 @@ export default {
 
   async scheduled(controller, env, ctx) {
     if (!env.GOOGLE_SERVICE_ACCOUNT_JSON) return; // Not yet authorized; nothing to import.
-    ctx.waitUntil(importAndEnqueue(env, { audit: false }).catch((e) => console.log("COI import held:", e.message)));
+    ctx.waitUntil((async () => {
+      try {
+        const r = await importAndEnqueue(env, { audit: false });
+        console.log("COI import:", JSON.stringify({ queued: r.queued.length, blocked: r.blocked_summary }));
+      } catch (e) { console.log("COI import held:", e.message); }
+      try {
+        const w = await sweepWritebacks(env);
+        if (w.length) console.log("write-back sweep:", JSON.stringify(w.map((x) => x.state)));
+      } catch (e) { console.log("write-back sweep held:", e.message); }
+    })());
   },
 };
